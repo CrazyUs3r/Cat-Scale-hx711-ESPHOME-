@@ -18,7 +18,8 @@ api:
     key: !secret key_api
 
 ota:
-  password: !secret key_ota
+  - platform: esphome
+    password: !secret key_ota
 
 wifi:
   ssid: !secret wifi_ssid
@@ -127,7 +128,6 @@ sensor:
 
   - platform: template
     name: "Kalibrierung gültig"
-    device_class: problem
     lambda: |-
       return id(calibration_raw_2) != id(calibration_raw_1) &&
              id(calibration_weight_2) != id(calibration_weight_1);
