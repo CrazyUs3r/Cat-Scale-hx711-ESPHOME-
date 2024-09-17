@@ -1,0 +1,378 @@
+substitutions:
+  name: "waage"
+  calibration_raw_1: '-122224.1'
+  calibration_weight_1: '0.0'
+  calibration_raw_2: '2051382.0'
+  calibration_weight_2: '101.5'
+
+esphome:
+  name: ${name}
+  platform: ESP8266
+  board: d1_mini
+
+logger:
+  level: INFO
+
+api:
+  encryption:
+    key: !secret key_api
+
+ota:
+  password: !secret key_ota
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  domain: .fritz.box
+  power_save_mode: NONE
+  manual_ip:
+    static_ip: 192.168.178.234
+    gateway: !secret gateway
+    subnet: !secret subnet
+    dns1: !secret dns1
+
+time:
+  - platform: homeassistant
+    id: homeassistant_time
+
+globals:
+  - id: saved_weight
+    type: float
+    restore_value: yes
+    initial_value: '0.0'
+  - id: calibration_raw_1
+    type: float
+    restore_value: yes
+    initial_value: '${calibration_raw_1}'
+  - id: calibration_weight_1
+    type: float
+    restore_value: yes
+    initial_value: '${calibration_weight_1}'
+  - id: calibration_raw_2
+    type: float
+    restore_value: yes
+    initial_value: '${calibration_raw_2}'
+  - id: calibration_weight_2
+    type: float
+    restore_value: yes
+    initial_value: '${calibration_weight_2}'
+  - id: tara_offset
+    type: float
+    restore_value: yes
+    initial_value: '0.0'
+  - id: auto_calibration_active
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: calibration_step
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: last_calibration_time
+    type: string
+    restore_value: yes
+    initial_value: '"Noch nie"'
+  - id: max_weight
+    type: float
+    restore_value: yes
+    initial_value: '0.0'
+
+sensor:
+  - platform: hx711
+    name: "Rohwert HX711"
+    id: "rohwert_sensor"
+    dout_pin: GPIO12
+    clk_pin: GPIO13
+    update_interval: 0.2s
+    unit_of_measurement: "Raw"
+    accuracy_decimals: 0
+    filters:
+      - quantile:
+          window_size: 10
+          send_every: 1
+          send_first_at: 1
+          quantile: .9
+    on_value:
+      then:
+        - globals.set:
+            id: saved_weight
+            value: !lambda 'return x;'
+
+  - platform: template
+    name: "Conny's Gewicht"
+    id: "gewicht_sensor"
+    unit_of_measurement: "kg"
+    accuracy_decimals: 2
+    update_interval: 1s
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 5
+    lambda: |-
+      float raw_value = id(saved_weight);
+      float weight = 0.0;
+      if (id(calibration_raw_2) != id(calibration_raw_1)) {
+        weight = (raw_value - id(calibration_raw_1)) *
+                 (id(calibration_weight_2) - id(calibration_weight_1)) /
+                 (id(calibration_raw_2) - id(calibration_raw_1));
+      }
+      weight -= id(tara_offset);
+      if (weight < 0.1) {
+        weight = 0.0;
+      }
+      if (weight > id(max_weight)) {
+        id(max_weight) = weight;
+      }
+      return weight;
+
+  - platform: template
+    name: "Kalibrierung gültig"
+    device_class: problem
+    lambda: |-
+      return id(calibration_raw_2) != id(calibration_raw_1) &&
+             id(calibration_weight_2) != id(calibration_weight_1);
+
+  - platform: template
+    name: "Kalibrierungsschritt"
+    id: calibration_step_sensor
+    lambda: 'return id(calibration_step);'
+
+  - platform: template
+    name: "Auto-Tara"
+    update_interval: 5s
+    lambda: |-
+      if (!id(binary_sensor_gewicht_stabil).state && id(gewicht_sensor).state < 1.0) {
+        id(tara_offset) = id(gewicht_sensor).state;
+        return id(tara_offset);
+      }
+      return id(tara_offset);
+
+  - platform: template
+    name: "Gewicht in Pfund"
+    unit_of_measurement: "lbs"
+    accuracy_decimals: 2
+    lambda: 'return id(gewicht_sensor).state * 2.20462;'
+
+  - platform: template
+    name: "Maximales Gewicht"
+    id: sensor_maximales_gewicht
+    unit_of_measurement: "kg"
+    accuracy_decimals: 2
+    lambda: 'return id(max_weight);'
+
+  - platform: template
+    name: "Durchschnittliches Gewicht"
+    unit_of_measurement: "kg"
+    accuracy_decimals: 2
+    update_interval: 60s
+    lambda: |-
+      static float sum = 0;
+      static int count = 0;
+      sum += id(gewicht_sensor).state;
+      count++;
+      return sum / count;
+
+  - platform: adc
+    pin: A0
+    name: "Batterie Spannung"
+    update_interval: 60s
+    attenuation: 11db
+    filters:
+      - multiply: 3.3
+    unit_of_measurement: "V"
+
+binary_sensor:
+  - platform: template
+    name: "Gewicht stabil"
+    id: binary_sensor_gewicht_stabil
+    device_class: moving
+    lambda: |-
+      static float last_weight = 0;
+      static uint32_t stable_start = 0;
+      float current_weight = id(gewicht_sensor).state;
+      if (abs(current_weight - last_weight) < 0.1) {
+        if (stable_start == 0) {
+          stable_start = millis();
+        } else if (millis() - stable_start > 3000) {
+          return false;  // nicht in Bewegung
+        }
+      } else {
+        stable_start = 0;
+      }
+      last_weight = current_weight;
+      return true;  // in Bewegung
+
+  - platform: template
+    name: "Gewichtsänderung Alarm"
+    device_class: motion
+    lambda: |-
+      static float last_weight = 0;
+      float current_weight = id(gewicht_sensor).state;
+      bool significant_change = abs(current_weight - last_weight) > 5.0;
+      last_weight = current_weight;
+      return significant_change;
+
+number:
+  - platform: template
+    name: "Tara Offset"
+    id: tara_offset_number
+    min_value: -100.0
+    max_value: 100.0
+    step: 0.01
+    initial_value: 0.0
+    optimistic: true
+    entity_category: diagnostic
+    unit_of_measurement: "kg"
+    set_action:
+      then:
+        - globals.set:
+            id: tara_offset
+            value: !lambda 'return x;'
+
+  - platform: template
+    name: "Kalibrierung Raw 1"
+    id: calibration_raw_1_number
+    min_value: -2000000.0
+    max_value: 3000000.0
+    step: 1
+    optimistic: true
+    entity_category: config
+    unit_of_measurement: "Raw"
+    set_action:
+      then:
+        - globals.set:
+            id: calibration_raw_1
+            value: !lambda 'return x;'
+
+  - platform: template
+    name: "Kalibrierung Gewicht 1"
+    id: calibration_weight_1_number
+    min_value: 0.0
+    max_value: 200.0
+    step: 0.01
+    optimistic: true
+    entity_category: config
+    unit_of_measurement: "kg"
+    set_action:
+      then:
+        - globals.set:
+            id: calibration_weight_1
+            value: !lambda 'return x;'
+
+  - platform: template
+    name: "Kalibrierung Raw 2"
+    id: calibration_raw_2_number
+    min_value: -2000000.0
+    max_value: 3000000.0
+    step: 1
+    optimistic: true
+    entity_category: config
+    unit_of_measurement: "Raw"
+    set_action:
+      then:
+        - globals.set:
+            id: calibration_raw_2
+            value: !lambda 'return x;'
+
+  - platform: template
+    name: "Kalibrierung Gewicht 2"
+    id: calibration_weight_2_number
+    min_value: 0.0
+    max_value: 200.0
+    step: 0.01
+    optimistic: true
+    entity_category: config
+    unit_of_measurement: "kg"
+    set_action:
+      then:
+        - globals.set:
+            id: calibration_weight_2
+            value: !lambda 'return x;'
+
+button:
+  - platform: template
+    name: "Tara"
+    entity_category: config
+    icon: "mdi:scale"
+    on_press:
+      then:
+        - globals.set:
+            id: tara_offset
+            value: !lambda 'return id(gewicht_sensor).state;'
+        - number.set:
+            id: tara_offset_number
+            value: !lambda 'return id(gewicht_sensor).state;'
+
+  - platform: template
+    name: "Start Auto-Kalibrierung"
+    on_press:
+      - globals.set:
+          id: auto_calibration_active
+          value: 'true'
+      - globals.set:
+          id: calibration_step
+          value: '0'
+      - logger.log: "Automatische Kalibrierung gestartet. Bitte Waage leeren."
+
+  - platform: template
+    name: "Nächster Kalibrierungsschritt"
+    on_press:
+      - lambda: |-
+          if (id(auto_calibration_active)) {
+            id(calibration_step)++;
+            if (id(calibration_step) == 1) {
+              id(calibration_raw_1) = id(rohwert_sensor).state;
+              id(calibration_weight_1) = 0.0;
+              ESP_LOGD("Auto-Kalibrierung", "Nullpunkt gesetzt. Bitte 100kg Gewicht auflegen.");
+            } else if (id(calibration_step) == 2) {
+              id(calibration_raw_2) = id(rohwert_sensor).state;
+              id(calibration_weight_2) = 100.0;
+              id(auto_calibration_active) = false;
+              auto time = id(homeassistant_time).now();
+              char buffer[64];
+              strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &time);
+              id(last_calibration_time) = buffer;
+              ESP_LOGD("Auto-Kalibrierung", "Kalibrierung abgeschlossen.");
+            }
+          }
+      - sensor.template.publish:
+          id: calibration_step_sensor
+          state: !lambda 'return id(calibration_step);'
+      - text_sensor.template.publish:
+          id: last_calibration_sensor
+          state: !lambda 'return id(last_calibration_time);'
+
+  - platform: template
+    name: "Reset Maximales Gewicht"
+    on_press:
+      - lambda: 'id(max_weight) = 0;'
+      - sensor.template.publish:
+          id: sensor_maximales_gewicht
+          state: 0
+
+switch:
+  - platform: restart
+    name: ${name} Reset
+
+text_sensor:
+  - platform: template
+    name: "Kalibrierungsstatus"
+    lambda: |-
+      if (id(auto_calibration_active)) {
+        if (id(calibration_step) == 0) {
+          return "Bitte Waage leeren und 'Nächster Schritt' drücken";
+        } else if (id(calibration_step) == 1) {
+          return "Bitte 100kg Gewicht auflegen und 'Nächster Schritt' drücken";
+        }
+      }
+      return "Kalibrierung inaktiv";
+
+  - platform: template
+    name: "Letzte Kalibrierung"
+    id: last_calibration_sensor
+    icon: "mdi:clock-outline"
+    lambda: 'return id(last_calibration_time);'
+
+status_led:
+  pin:
+    number: D4
