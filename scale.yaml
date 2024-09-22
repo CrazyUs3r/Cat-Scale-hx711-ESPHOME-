@@ -1,5 +1,5 @@
 substitutions:
-  name: "waage"
+  name: "waagggggge"
   calibration_raw_1: '-122224.1'
   calibration_weight_1: '0.0'
   calibration_raw_2: '2051382.0'
@@ -69,14 +69,13 @@ globals:
     type: int
     restore_value: no
     initial_value: '0'
-  - id: last_calibration_time
-    type: string
-    restore_value: yes
-    initial_value: '"Noch nie"'
   - id: max_weight
     type: float
     restore_value: yes
     initial_value: '0.0'
+  - id: last_calibration_time
+    type: std::string
+    restore_value: False
 
 sensor:
   - platform: hx711
@@ -127,12 +126,6 @@ sensor:
       return weight;
 
   - platform: template
-    name: "Kalibrierung gültig"
-    lambda: |-
-      return id(calibration_raw_2) != id(calibration_raw_1) &&
-             id(calibration_weight_2) != id(calibration_weight_1);
-
-  - platform: template
     name: "Kalibrierungsschritt"
     id: calibration_step_sensor
     lambda: 'return id(calibration_step);'
@@ -172,14 +165,14 @@ sensor:
       count++;
       return sum / count;
 
-  - platform: adc
-    pin: A0
-    name: "Batterie Spannung"
-    update_interval: 60s
-    attenuation: 11db
-    filters:
-      - multiply: 3.3
-    unit_of_measurement: "V"
+  #- platform: adc
+  #  pin: A0
+  #  name: "Batterie Spannung"
+  #  update_interval: 60s
+  #  attenuation: 3
+  #  filters:
+  #    - multiply: 3.3
+  #  unit_of_measurement: "V"
 
 binary_sensor:
   - platform: template
@@ -236,6 +229,7 @@ number:
     max_value: 3000000.0
     step: 1
     optimistic: true
+    initial_value: ${calibration_raw_1}
     entity_category: config
     unit_of_measurement: "Raw"
     set_action:
@@ -251,6 +245,7 @@ number:
     max_value: 200.0
     step: 0.01
     optimistic: true
+    initial_value: ${calibration_weight_1}
     entity_category: config
     unit_of_measurement: "kg"
     set_action:
@@ -266,6 +261,7 @@ number:
     max_value: 3000000.0
     step: 1
     optimistic: true
+    initial_value: ${calibration_raw_2}
     entity_category: config
     unit_of_measurement: "Raw"
     set_action:
@@ -281,6 +277,7 @@ number:
     max_value: 200.0
     step: 0.01
     optimistic: true
+    initial_value: ${calibration_weight_2}
     entity_category: config
     unit_of_measurement: "kg"
     set_action:
@@ -291,9 +288,7 @@ number:
 
 button:
   - platform: template
-    name: "Tara"
-    entity_category: config
-    icon: "mdi:scale"
+    name: "Manuel Tara"
     on_press:
       then:
         - globals.set:
@@ -302,6 +297,26 @@ button:
         - number.set:
             id: tara_offset_number
             value: !lambda 'return id(gewicht_sensor).state;'
+
+  - platform: template
+    name: "Set Zero"
+    entity_category: config
+    icon: "mdi:scale"
+    on_press: 
+      then:
+       - number.set: 
+          id: calibration_raw_1_number
+          value: !lambda 'return id(rohwert_sensor).state;'
+
+  - platform: template
+    name: "Set Max"
+    entity_category: config
+    icon: "mdi:scale"
+    on_press: 
+      then:
+        - number.set: 
+            id: calibration_raw_2_number
+            value: !lambda 'return id(rohwert_sensor).state;'
 
   - platform: template
     name: "Start Auto-Kalibrierung"
@@ -323,18 +338,26 @@ button:
             if (id(calibration_step) == 1) {
               id(calibration_raw_1) = id(rohwert_sensor).state;
               id(calibration_weight_1) = 0.0;
-              ESP_LOGD("Auto-Kalibrierung", "Nullpunkt gesetzt. Bitte 100kg Gewicht auflegen.");
+              ESP_LOGD("Auto-Kalibrierung", "Nullpunkt gesetzt. Bitte 10kg Gewicht auflegen.");
             } else if (id(calibration_step) == 2) {
               id(calibration_raw_2) = id(rohwert_sensor).state;
-              id(calibration_weight_2) = 100.0;
+              id(calibration_weight_2) = 10.0;
               id(auto_calibration_active) = false;
               auto time = id(homeassistant_time).now();
+              struct tm timeinfo;
+              timeinfo.tm_year = time.year - 1900;
+              timeinfo.tm_mon = time.month - 1;
+              timeinfo.tm_mday = time.day_of_month;
+              timeinfo.tm_hour = time.hour;
+              timeinfo.tm_min = time.minute;
+              timeinfo.tm_sec = time.second;
               char buffer[64];
-              strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &time);
+              strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &timeinfo);
               id(last_calibration_time) = buffer;
               ESP_LOGD("Auto-Kalibrierung", "Kalibrierung abgeschlossen.");
             }
           }
+
       - sensor.template.publish:
           id: calibration_step_sensor
           state: !lambda 'return id(calibration_step);'
@@ -357,15 +380,15 @@ switch:
 text_sensor:
   - platform: template
     name: "Kalibrierungsstatus"
-    lambda: |-
+    lambda: !lambda |-
       if (id(auto_calibration_active)) {
         if (id(calibration_step) == 0) {
-          return "Bitte Waage leeren und 'Nächster Schritt' drücken";
+          return {"Bitte Waage leeren und 'Nächster Schritt' drücken"};
         } else if (id(calibration_step) == 1) {
-          return "Bitte 100kg Gewicht auflegen und 'Nächster Schritt' drücken";
+          return {"Bitte 10kg Gewicht auflegen und 'Nächster Schritt' drücken"};
         }
       }
-      return "Kalibrierung inaktiv";
+      return {"Kalibrierung inaktiv"};
 
   - platform: template
     name: "Letzte Kalibrierung"
@@ -373,6 +396,16 @@ text_sensor:
     icon: "mdi:clock-outline"
     lambda: 'return id(last_calibration_time);'
 
+  - platform: template
+    name: "Kalibrierung gültig"
+    lambda:  !lambda |-
+      if (id(calibration_raw_2) != id(calibration_raw_1) && id(calibration_weight_2) != id(calibration_weight_1)) {
+        return {"True"};
+      } else {
+        return {"False"};
+      }
+
 status_led:
   pin:
     number: D4
+    inverted: true
