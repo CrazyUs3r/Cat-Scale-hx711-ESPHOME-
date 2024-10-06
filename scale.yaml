@@ -214,7 +214,7 @@ number:
     step: 0.01
     initial_value: 0.0
     optimistic: true
-    entity_category: diagnostic
+    entity_category: config
     unit_of_measurement: "kg"
     set_action:
       then:
